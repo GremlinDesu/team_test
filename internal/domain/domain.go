@@ -26,6 +26,7 @@ type TeamMember struct {
 
 type Task struct {
 	ID          string    `json:"id"`
+	TeamID      string    `json:"team_id"`
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
 	Status      string    `json:"status"`
@@ -51,4 +52,7 @@ type TaskComment struct {
 	UsedID    string    `json:"user_id"`
 	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type Analytics struct {
 }

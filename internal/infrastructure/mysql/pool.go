@@ -1,4 +1,4 @@
-package pool
+package mysql_pool
 
 import (
 	"database/sql"
