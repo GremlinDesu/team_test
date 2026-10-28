@@ -4,6 +4,6 @@ import "time"
 
 const RoleOwner = "Owner"
 const RoleAdmin = "Admin"
-const RoleUser = "User"
+const RoleMember = "Member"
 
 const AnalyticsPeriod = 30 * 24 * time.Hour

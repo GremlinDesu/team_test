@@ -16,56 +16,89 @@ func NewRepoDB(pool *sql.DB) *Repo_DB {
 	}
 }
 
-func (r *Repo_DB) CreateUser(user domain.User) error {
-	_, err := r.Pool.Exec("INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)", user.Email, user.Password_Hash, user.Name)
-	return err
+func (r *Repo_DB) CreateUser(user domain.User) (int64, error) {
+	res, err := r.Pool.Exec("INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)", user.Email, user.Password_Hash, user.Name)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
-func (r *Repo_DB) CreateTeam(team domain.Team) error {
-	_, err := r.Pool.Exec("INSERT INTO teams (name, created_by) VALUES (?, ?)", team.Name, team.CreatedBY)
-	return err
+func (r *Repo_DB) CreateTeam(user_id int64, team domain.Team) (int64, error) {
+	res, err := r.Pool.Exec("INSERT INTO teams (name, created_by) VALUES (?, ?)", team.Name, team.CreatedBY)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	makeOwnerErr := r.makeOwner(user_id, id)
+	if makeOwnerErr != nil {
+		return 0, makeOwnerErr
+	}
+	return id, nil
 }
 
-func (r *Repo_DB) CreateTask(Task domain.Task) error {
-	var id string
-	_, err := r.secureQuery("INSERT INTO tasks (team_id, title, description, status, created_by, assignee_id, version) VALUES (?, ?, ?, ?, ?, ?, ?)", Task.TeamID, Task.Title, Task.Description, Task.Status, Task.CreatedBy, Task.AssigneeID, Task.Version)
+func (r *Repo_DB) CreateTask(UserID int64, Task domain.Task) (int64, error) {
+	res, err := r.secureQuery("INSERT INTO tasks (team_id, title, description, status, created_by, assignee_id, version) VALUES (?, ?, ?, ?, ?, ?, ?)", Task.TeamID, Task.Title, Task.Description, Task.Status, Task.CreatedBy, Task.AssigneeID, Task.Version)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	row, err := r.Pool.Query("SELECT LAST_INSERT_ID()")
+	id, err := res.LastInsertId()
 	if err != nil {
-		return err
+		return 0, err
 	}
-	defer row.Close()
-	if row.Next() {
-		err = row.Scan(&id)
-	}
+	id, err = r.updateHistory(id, UserID, "Task created")
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return r.updateHistory(id, Task.CreatedBy, "Task created")
+	err = r.makeOwner(UserID, Task.TeamID)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
-func (r *Repo_DB) UpdateTask(AdderID string, taskID string, Task domain.Task) error {
-
+func (r *Repo_DB) UpdateTask(userID int64, taskID int64, Task domain.Task) (int64, error) {
+	visible, err := r.checkVisibility(userID, taskID)
+	if err != nil {
+		return 0, err
+	}
+	if !visible {
+		return 0, ErrNotVisible
+	}
 	return r.updateTask(taskID, Task)
 }
 
-func (r *Repo_DB) updateTask(taskID string, Task domain.Task) error {
-	_, err := r.secureQuery("UPDATE tasks SET title = ?, description = ?, status = ?, assignee_id = ?, version = ? WHERE id = ?", Task.Title, Task.Description, Task.Status, Task.AssigneeID, Task.Version, taskID)
+func (r *Repo_DB) updateTask(taskID int64, Task domain.Task) (int64, error) {
+	res, err := r.secureQuery("UPDATE tasks SET title = ?, description = ?, status = ?, assignee_id = ?, version = ? WHERE id = ?", Task.Title, Task.Description, Task.Status, Task.AssigneeID, Task.Version, taskID)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return r.updateHistory(taskID, Task.CreatedBy, "Task updated")
+	_, err = r.updateHistory(taskID, Task.CreatedBy, "Task updated")
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
 }
 
-func (r *Repo_DB) addTeamMember(userID, teamUserID, role string) error {
-	_, err := r.secureQuery("INSERT INTO team_members (user_id, team_user_id, role) VALUES (?, ?, ?)", userID, teamUserID, role)
+func (r *Repo_DB) addTeamMember(userID int64, teamUserID int64, role string) error {
+	var exists bool
+	r.Pool.QueryRow("SELECT EXISTS(SELECT 1 FROM team_members WHERE id = ? AND  team_id = ? )", userID, teamUserID).Scan(&exists)
+	if exists {
+		return ErrUserAlreadyInTeam
+	}
+	_, err := r.secureQuery("INSERT INTO team_members (user_id, team_id, role) VALUES (?, ?, ?)", userID, teamUserID, role)
 	return err
 }
 
-func (r *Repo_DB) GetUserTeams(userID string) ([]domain.Team, error) {
-	rows, err := r.Pool.Query("SELECT t.id, t.name, t.created_by, t.created_at FROM teams t JOIN team_members tm ON t.id = tm.team_user_id WHERE tm.user_id = ?", userID)
+func (r *Repo_DB) GetUserTeams(userID int64) ([]domain.Team, error) {
+	rows, err := r.Pool.Query("SELECT id, name, created_by, created_at FROM teams WHERE id IN (SELECT team_id FROM team_members WHERE user_id = ?)", userID)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +118,14 @@ func (r *Repo_DB) GetUserTeams(userID string) ([]domain.Team, error) {
 	return teams, nil
 }
 
-func (r *Repo_DB) GetTaskHistory(taskID int64) ([]domain.TaskHistory, error) {
+func (r *Repo_DB) GetTaskHistory(userID, taskID int64) ([]domain.TaskHistory, error) {
+	visible, err := r.checkVisibility(userID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if !visible {
+		return nil, ErrNotVisible
+	}
 	rows, err := r.Pool.Query("SELECT id, task_id, changed_by, changes, created_at FROM task_history WHERE task_id = ?", taskID)
 	if err != nil {
 		return nil, err
@@ -106,25 +146,21 @@ func (r *Repo_DB) GetTaskHistory(taskID int64) ([]domain.TaskHistory, error) {
 	return history, nil
 }
 
-func (r *Repo_DB) secureQuery(query string, args ...interface{}) (*sql.Rows, error) {
+func (r *Repo_DB) secureQuery(query string, args ...interface{}) (sql.Result, error) {
 	tx, err := r.Pool.Begin()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(query, args...)
+	res, err := tx.Exec(query, args...)
 	if err != nil {
 		tx.Rollback()
 		return nil, err
-	}
-	if rows.Err() != nil {
-		tx.Rollback()
-		return nil, rows.Err()
 	}
 	err = tx.Commit()
 	if err != nil {
 		return nil, err
 	}
-	return rows, nil
+	return res, nil
 }
 
 func (r *Repo_DB) GetUserByEmail(email string) (*domain.User, error) {
@@ -137,12 +173,26 @@ func (r *Repo_DB) GetUserByEmail(email string) (*domain.User, error) {
 	return &user, nil
 }
 
-func (r *Repo_DB) CreateTaskComment(taskID int64, userID, content string) error {
-	_, err := r.secureQuery("INSERT INTO task_comments (task_id, user_id, content) VALUES (?, ?, ?)", taskID, userID, content)
+func (r *Repo_DB) CreateTaskComment(taskID int64, userID int64, content string) error {
+	visible, err := r.checkVisibility(userID, taskID)
+	if err != nil {
+		return err
+	}
+	if !visible {
+		return ErrNotVisible
+	}
+	_, err = r.secureQuery("INSERT INTO task_comments (task_id, user_id, content) VALUES (?, ?, ?)", taskID, userID, content)
 	return err
 }
 
-func (r *Repo_DB) GetTaskComments(taskID int64) ([]domain.TaskComment, error) {
+func (r *Repo_DB) GetTaskComments(userID, taskID int64) ([]domain.TaskComment, error) {
+	visible, err := r.checkVisibility(userID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if !visible {
+		return nil, ErrNotVisible
+	}
 	rows, err := r.Pool.Query("SELECT id, task_id, user_id, content, created_at FROM task_comments WHERE task_id = ?", taskID)
 	if err != nil {
 		return nil, err
@@ -163,41 +213,88 @@ func (r *Repo_DB) GetTaskComments(taskID int64) ([]domain.TaskComment, error) {
 	return comments, nil
 }
 
-func (r *Repo_DB) updateHistory(taskID string, changedBy string, changes string) error {
-	_, err := r.secureQuery("INSERT INTO task_history (task_id, changed_by, changes) VALUES (?, ?, ?)", taskID, changedBy, changes)
-	return err
+func (r *Repo_DB) updateHistory(taskID int64, changedBy int64, changes string) (int64, error) {
+	res, err := r.secureQuery("INSERT INTO task_history (task_id, changed_by, changes) VALUES (?, ?, ?)", taskID, changedBy, changes)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	return id, err
 }
 
-func (r *Repo_DB) AddUserToTeam(adderID, userID, teamID, role string) error {
-	useRole, err := r.GetRoleForUserInTeam(adderID, teamID)
+func (r *Repo_DB) AddUserToTeam(adderID int64, userID int64, teamID int64, role string) error {
+	userExists, err := r.checkUserExists(userID)
+	if err != nil {
+		return err
+	}
+	if !userExists {
+		return fmt.Errorf("user with ID %d does not exist", userID)
+	}
+	useRole, err := r.getRoleForUserInTeam(adderID, teamID)
 	if err != nil {
 		return err
 	}
 	if useRole != domain.RoleAdmin && useRole != domain.RoleOwner {
-		return fmt.Errorf("user does not have permission to add members to this team")
+		return ErrBadRole
 	}
 	if role == domain.RoleAdmin && useRole != domain.RoleOwner {
-		return fmt.Errorf("only owners can assign admin role")
+		return ErrBadRole
 	}
 	return r.addTeamMember(userID, teamID, role)
 }
 
-func (r *Repo_DB) GetTaskByID(taskID string) (*domain.Task, error) {
-	row := r.Pool.QueryRow("SELECT id, team_id, title, description, status, created_by, assignee_id, created_at, updated_at, closed_at, version FROM tasks WHERE id = ?", taskID)
-	var task domain.Task
-	err := row.Scan(&task.ID, &task.TeamID, &task.Title, &task.Description, &task.Status, &task.CreatedBy, &task.AssigneeID, &task.CreatedAt, &task.UpdatedAt, &task.ClosedAt, &task.Version)
-	if err != nil {
-		return nil, err
-	}
-	return &task, nil
-}
-
-func (r *Repo_DB) GetRoleForUserInTeam(userID, teamID string) (string, error) {
-	row := r.Pool.QueryRow("SELECT role FROM team_members WHERE user_id = ? AND team_user_id = ?", userID, teamID)
+func (r *Repo_DB) getRoleForUserInTeam(userID, teamID int64) (string, error) {
+	row := r.Pool.QueryRow("SELECT role FROM team_members WHERE user_id = ? AND team_id = ?", userID, teamID)
 	var role string
 	err := row.Scan(&role)
 	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", ErrUSerNotInTeam
+		}
 		return "", err
 	}
 	return role, nil
+}
+
+func (r *Repo_DB) getTeamID(taskID int64) (int64, error) {
+	var id int64
+	row := r.Pool.QueryRow("SELECT team_id FROM tasks WHERE id = ?", taskID)
+	err := row.Scan(id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+func (r *Repo_DB) makeOwner(userID, teamID int64) error {
+	_, err := r.secureQuery("INSERT INTO team_members (user_id, team_id, role) VALUES (?, ?, ?)", userID, teamID, domain.RoleOwner)
+	return err
+}
+
+func (r *Repo_DB) checkVisibility(userID int64, taskID int64) (bool, error) {
+	team_id, err := r.getTeamID(taskID)
+	if err != nil {
+		return false, err
+	}
+	role, err := r.getRoleForUserInTeam(userID, team_id)
+	if role == domain.RoleAdmin || role == domain.RoleOwner {
+		return true, nil
+	}
+	var exists bool
+	query := "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ? AND  created_by = ? )"
+	err = r.Pool.QueryRow(query, taskID, userID).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func (r *Repo_DB) checkUserExists(userID int64) (bool, error) {
+	row := r.Pool.QueryRow("SELECT COUNT(*) FROM users WHERE id = ?", userID)
+	var count int
+	err := row.Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }

@@ -3,7 +3,7 @@ package domain
 import "time"
 
 type User struct {
-	ID            string    `json:"id"`
+	ID            int64     `json:"id"`
 	Email         string    `json:"email"`
 	Password_Hash string    `json:"password_hash"`
 	Name          string    `json:"name"`
@@ -11,27 +11,26 @@ type User struct {
 }
 
 type Team struct {
-	ID        string    `json:"id"`
+	ID        int64     `json:"id"`
 	Name      string    `json:"name"`
-	CreatedBY string    `json:"created_by"`
+	CreatedBY int64     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
 type TeamMember struct {
-	ID         string `json:"id"`
-	UserID     string `json:"user_id"`
-	TeamUserID string `json:"team_user_id"`
-	Role       string `json:"role"`
+	ID     int64  `json:"id"`
+	UserID string `json:"user_id"`
+	Role   string `json:"role"`
 }
 
 type Task struct {
-	ID          string    `json:"id"`
-	TeamID      string    `json:"team_id"`
+	ID          int64     `json:"id"`
+	TeamID      int64     `json:"team_id"`
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
 	Status      string    `json:"status"`
-	CreatedBy   string    `json:"created_by"`
-	AssigneeID  string    `json:"assignee_id"`
+	CreatedBy   int64     `json:"created_by"`
+	AssigneeID  int64     `json:"assignee_id"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	ClosedAt    time.Time `json:"closed_at"`
@@ -39,20 +38,23 @@ type Task struct {
 }
 
 type TaskHistory struct {
-	ID        string    `json:"id"`
-	TaskID    string    `json:"task_id"`
+	ID        int64     `json:"id"`
+	TaskID    int64     `json:"task_id"`
 	ChangedBy string    `json:"changed_by"`
 	Changes   string    `json:"changes"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
 type TaskComment struct {
-	ID        string    `json:"id"`
-	TaskID    string    `json:"task_id"`
+	ID        int64     `json:"id"`
+	TaskID    int64     `json:"task_id"`
 	UsedID    string    `json:"user_id"`
 	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
 type Analytics struct {
+	TeamName          string `json:"team_name"`
+	TopUsers          []User `json:"top_contributors"`
+	MostCommentedTask Task   `json:"most_commented_task"`
 }
