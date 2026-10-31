@@ -2,11 +2,13 @@ package repo_db_test
 
 import (
 	"database/sql"
+	"strconv"
 	"team-test/config"
 	"team-test/internal/domain"
 	mysql_pool "team-test/internal/infrastructure/mysql"
 	repo_db "team-test/internal/repo/DB"
 	"testing"
+	"time"
 )
 
 func Setup() *repo_db.Repo_DB {
@@ -38,11 +40,17 @@ func TestCreateUser(t *testing.T) {
 
 func TestCreateTeam(t *testing.T) {
 	RepoDB := Setup()
+	user := domain.User{
+		Email:         "test12@example.com",
+		Password_Hash: "hashed_password",
+		Name:          "Test User",
+	}
+	id, err := RepoDB.CreateUser(user)
 	team := domain.Team{
 		Name:      "Test Team",
-		CreatedBY: 1,
+		CreatedBY: id,
 	}
-	_, err := RepoDB.CreateTeam(1, team)
+	_, err = RepoDB.CreateTeam(1, team)
 	if err != nil {
 		t.Errorf("Error creating team: %v", err)
 	}
@@ -50,16 +58,32 @@ func TestCreateTeam(t *testing.T) {
 
 func TestCreateTask(t *testing.T) {
 	RepoDB := Setup()
+	user := domain.User{
+		Email:         "test12@example.com",
+		Password_Hash: "hashed_password",
+		Name:          "Test User",
+	}
+	id, err := RepoDB.CreateUser(user)
+	team := domain.Team{
+		Name:      "Test Team",
+		CreatedBY: id,
+	}
+	teamID, err := RepoDB.CreateTeam(1, team)
+	if err != nil {
+		t.Errorf("Error creating team: %v", err)
+	}
+
 	task := domain.Task{
-		TeamID:      1,
+		TeamID:      teamID,
 		Title:       "Test Task",
 		Description: "This is a test task",
 		Status:      "pending",
-		CreatedBy:   1,
-		AssigneeID:  1,
+		CreatedBy:   id,
+		AssigneeID:  id,
 		Version:     "1.0",
+		ClosedAt:    time.Time{}, // Ensure ClosedAt is zeroed out when creating a new task
 	}
-	_, err := RepoDB.CreateTask(1, task)
+	_, err = RepoDB.CreateTask(1, task)
 	if err != nil {
 		t.Errorf("Error creating task: %v", err)
 	}
@@ -133,6 +157,103 @@ func TestAddMemberToTeam(t *testing.T) {
 	err = RepoDB.AddUserToTeam(id, id2, teamID, domain.RoleMember)
 	if err != repo_db.ErrUserAlreadyInTeam {
 		t.Errorf("double add avaliable %v", err)
+	}
+}
+
+func TestAddComment(t *testing.T) {
+	RepoDB := Setup()
+	user := domain.User{
+		Email:         "test12@example.com",
+		Password_Hash: "hashed_password",
+		Name:          "Test User",
+	}
+	id, err := RepoDB.CreateUser(user)
+	if err != nil {
+		t.Errorf("Error creating user: %v", err)
+	}
+	team := domain.Team{
+		Name:      "Test Team",
+		CreatedBY: 1,
+	}
+	teamID, err := RepoDB.CreateTeam(1, team)
+	if err != nil {
+		t.Errorf("Error creating team: %v", err)
+	}
+	task := domain.Task{
+		TeamID:      teamID,
+		Title:       "Test Task",
+		Description: "This is a test task",
+		Status:      "pending",
+		CreatedBy:   id,
+		AssigneeID:  1,
+		Version:     "1.0",
+	}
+	taskID, err := RepoDB.CreateTask(id, task)
+	if err != nil {
+		t.Errorf("Error creating task: %v", err)
+	}
+	_, err = RepoDB.AddComment(taskID, id, "test test test")
+	if err != nil {
+		t.Errorf("Error creating comment: %v", err)
+	}
+}
+
+func TestGetTeamTasks(t *testing.T) {
+	RepoDB := Setup()
+	user := domain.User{
+		Email:         "test1445@example.com",
+		Password_Hash: "hashed_password",
+		Name:          "Test User",
+	}
+	id, err := RepoDB.CreateUser(user)
+	if err != nil {
+		t.Errorf("Error creating user: %v", err)
+	}
+	team := domain.Team{
+		Name:      "Test Team",
+		CreatedBY: id,
+	}
+	teamID, err := RepoDB.CreateTeam(id, team)
+	if err != nil {
+		t.Errorf("Error creating team: %v", err)
+	}
+	user2 := domain.User{
+		Email:         "test1545@example.com",
+		Password_Hash: "hashed_password",
+		Name:          "Test User",
+	}
+	id2, err := RepoDB.CreateUser(user2)
+	if err != nil {
+		t.Errorf("Error creating user: %v", err)
+	}
+
+	task := domain.Task{
+		TeamID:      teamID,
+		Title:       "Test Task",
+		Description: "This is a test task",
+		Status:      "pending",
+		CreatedBy:   id,
+		AssigneeID:  id2,
+		Version:     "1.0",
+	}
+
+	for i := 0; i < 5; i++ {
+		task.Title += strconv.Itoa(i)
+		task.Description += strconv.Itoa(i)
+		_, err = RepoDB.CreateTask(id, task)
+		if err != nil {
+			t.Errorf("Error creating task: %v", err)
+		}
+	}
+	_, err = RepoDB.GetTeamTasks(id, teamID, 0, 2, nil)
+	if err != nil {
+		t.Errorf("error getting team tasks %v", err)
+	}
+	var filters = make(map[string]interface{})
+	filters["status"] = "pending"
+	_, err = RepoDB.GetTeamTasks(id, teamID, 0, 2, filters)
+	if err != nil {
+		t.Errorf("error getting team tasks with filter %v", err)
 	}
 }
 

@@ -1,4 +1,4 @@
-package cache_test
+package redis_cache_test
 
 import (
 	"log/slog"

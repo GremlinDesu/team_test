@@ -9,7 +9,7 @@ create table tasks (
     assignee_id bigint unsigned references users(id) on delete set null,
     created_at timestamp default current_timestamp,
     updated_at timestamp default current_timestamp,
-    closed_at timestamp,
+    closed_at timestamp default null,
     version varchar(50) not null default "1"
 );
 

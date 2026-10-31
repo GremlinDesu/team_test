@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"team-test/internal/domain"
+	"time"
 )
 
 type Repo_DB struct {
@@ -45,42 +46,83 @@ func (r *Repo_DB) CreateTeam(user_id int64, team domain.Team) (int64, error) {
 }
 
 func (r *Repo_DB) CreateTask(UserID int64, Task domain.Task) (int64, error) {
-	res, err := r.secureQuery("INSERT INTO tasks (team_id, title, description, status, created_by, assignee_id, version) VALUES (?, ?, ?, ?, ?, ?, ?)", Task.TeamID, Task.Title, Task.Description, Task.Status, Task.CreatedBy, Task.AssigneeID, Task.Version)
-	if err != nil {
-		return 0, err
+	var id int64
+	if Task.ClosedAt.IsZero() {
+		res, err := r.secureQuery("INSERT INTO tasks (team_id, title, description, status, created_by, assignee_id, version, closed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", Task.TeamID, Task.Title, Task.Description, Task.Status, Task.CreatedBy, Task.AssigneeID, Task.Version, sql.NullTime{})
+		if err != nil {
+			return 0, err
+		}
+		id, err = res.LastInsertId()
+		if err != nil {
+			return 0, err
+		}
+	} else {
+		res, err := r.secureQuery("INSERT INTO tasks (team_id, title, description, status, created_by, assignee_id, version, closed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", Task.TeamID, Task.Title, Task.Description, Task.Status, Task.CreatedBy, Task.AssigneeID, Task.Version, Task.ClosedAt)
+		if err != nil {
+			return 0, err
+		}
+		id, err = res.LastInsertId()
+		if err != nil {
+			return 0, err
+		}
 	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-	id, err = r.updateHistory(id, UserID, "Task created")
-	if err != nil {
-		return 0, err
-	}
-	err = r.makeOwner(UserID, Task.TeamID)
+	id, err := r.updateHistory(id, UserID, "Task created")
 	if err != nil {
 		return 0, err
 	}
 	return id, nil
 }
 
+func (r *Repo_DB) GetTeamTasks(userID int64, teamID int64, offset int, limit int, filters map[string]interface{}) ([]domain.Task, error) {
+	var ClosedAt sql.NullTime
+	_, err := r.getRoleForUserInTeam(userID, int64(teamID))
+	if err != nil {
+		return nil, err
+	}
+	query, args := constructQuery(offset, limit, int64(teamID), filters)
+
+	rows, err := r.Pool.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query error: %w", err)
+	}
+	defer rows.Close()
+	if rows.Err() != nil {
+		return nil, rows.Err()
+	}
+	var tasks []domain.Task
+	for rows.Next() {
+		var p domain.Task
+		if err := rows.Scan(&p.ID, &p.TeamID, &p.Title, &p.Description, &p.Status, &p.CreatedBy, &p.AssigneeID, &p.CreatedAt, &p.UpdatedAt, &ClosedAt, &p.Version); err != nil {
+			return nil, fmt.Errorf("scan error: %w", err)
+		}
+		if ClosedAt.Valid {
+			p.ClosedAt = ClosedAt.Time
+		} else {
+			p.ClosedAt = time.Time{}
+		}
+		tasks = append(tasks, p)
+	}
+	if len(tasks) == 0 {
+		return nil, fmt.Errorf("no tasks found for team %d", teamID)
+	}
+	return tasks, nil
+}
+
 func (r *Repo_DB) UpdateTask(userID int64, taskID int64, Task domain.Task) (int64, error) {
-	visible, err := r.checkVisibility(userID, taskID)
+	visible, err := r.CheckVisibility(userID, taskID)
 	if err != nil {
 		return 0, err
 	}
 	if !visible {
 		return 0, ErrNotVisible
 	}
-	return r.updateTask(taskID, Task)
-}
-
-func (r *Repo_DB) updateTask(taskID int64, Task domain.Task) (int64, error) {
+	Update := fmt.Sprintf("task updated by %d with new params: %+v", userID, Task)
 	res, err := r.secureQuery("UPDATE tasks SET title = ?, description = ?, status = ?, assignee_id = ?, version = ? WHERE id = ?", Task.Title, Task.Description, Task.Status, Task.AssigneeID, Task.Version, taskID)
 	if err != nil {
 		return 0, err
 	}
-	_, err = r.updateHistory(taskID, Task.CreatedBy, "Task updated")
+
+	_, err = r.updateHistory(taskID, Task.CreatedBy, Update)
 	if err != nil {
 		return 0, err
 	}
@@ -119,7 +161,7 @@ func (r *Repo_DB) GetUserTeams(userID int64) ([]domain.Team, error) {
 }
 
 func (r *Repo_DB) GetTaskHistory(userID, taskID int64) ([]domain.TaskHistory, error) {
-	visible, err := r.checkVisibility(userID, taskID)
+	visible, err := r.CheckVisibility(userID, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -173,20 +215,24 @@ func (r *Repo_DB) GetUserByEmail(email string) (*domain.User, error) {
 	return &user, nil
 }
 
-func (r *Repo_DB) CreateTaskComment(taskID int64, userID int64, content string) error {
-	visible, err := r.checkVisibility(userID, taskID)
+func (r *Repo_DB) AddComment(taskID int64, userID int64, content string) (int64, error) {
+	visible, err := r.CheckVisibility(userID, taskID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !visible {
-		return ErrNotVisible
+		return 0, ErrNotVisible
 	}
-	_, err = r.secureQuery("INSERT INTO task_comments (task_id, user_id, content) VALUES (?, ?, ?)", taskID, userID, content)
-	return err
+	res, err := r.secureQuery("INSERT INTO task_comments (task_id, user_id, content) VALUES (?, ?, ?)", taskID, userID, content)
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	return id, err
 }
 
 func (r *Repo_DB) GetTaskComments(userID, taskID int64) ([]domain.TaskComment, error) {
-	visible, err := r.checkVisibility(userID, taskID)
+	visible, err := r.CheckVisibility(userID, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -243,6 +289,18 @@ func (r *Repo_DB) AddUserToTeam(adderID int64, userID int64, teamID int64, role 
 	return r.addTeamMember(userID, teamID, role)
 }
 
+func (r *Repo_DB) GetAnalytics(userID, teamID int64) (*domain.Analytics, error) {
+	var res *domain.Analytics
+	role, err := r.getRoleForUserInTeam(userID, teamID)
+	if err != nil {
+		return nil, err
+	}
+	if role != domain.RoleAdmin && role != domain.RoleOwner {
+		return nil, ErrBadRole
+	}
+	return res, nil
+}
+
 func (r *Repo_DB) getRoleForUserInTeam(userID, teamID int64) (string, error) {
 	row := r.Pool.QueryRow("SELECT role FROM team_members WHERE user_id = ? AND team_id = ?", userID, teamID)
 	var role string
@@ -259,7 +317,7 @@ func (r *Repo_DB) getRoleForUserInTeam(userID, teamID int64) (string, error) {
 func (r *Repo_DB) getTeamID(taskID int64) (int64, error) {
 	var id int64
 	row := r.Pool.QueryRow("SELECT team_id FROM tasks WHERE id = ?", taskID)
-	err := row.Scan(id)
+	err := row.Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -271,7 +329,7 @@ func (r *Repo_DB) makeOwner(userID, teamID int64) error {
 	return err
 }
 
-func (r *Repo_DB) checkVisibility(userID int64, taskID int64) (bool, error) {
+func (r *Repo_DB) CheckVisibility(userID int64, taskID int64) (bool, error) {
 	team_id, err := r.getTeamID(taskID)
 	if err != nil {
 		return false, err
@@ -297,4 +355,17 @@ func (r *Repo_DB) checkUserExists(userID int64) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func constructQuery(offset, limit int, teamID int64, filters map[string]interface{}) (string, []interface{}) {
+	var args []interface{}
+	query := "SELECT id, team_id, title, description, status, created_by, assignee_id, created_at, updated_at, closed_at, version FROM tasks WHERE team_id =?"
+	args = append(args, teamID)
+	for key, value := range filters {
+		query += " AND " + key + " = ? "
+		args = append(args, value)
+	}
+	query += " ORDER BY id LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+	return query, args
 }
